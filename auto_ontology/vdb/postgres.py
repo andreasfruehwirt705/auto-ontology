@@ -29,6 +29,28 @@ logger = logging.getLogger(__name__)
 
 _DATABASE_METADATA_COLUMN = "database_name"
 _LABEL_METADATA_COLUMN = "label"
+
+# Width of the embedding column, fixed when the table is first created. The
+# default matches the built-in NIM embedding model; any other EMBED_MODEL has
+# to declare its width here or the first write fails with a dimension error.
+_DEFAULT_VECTOR_SIZE = 2048
+
+
+def _default_vector_size() -> int:
+    raw = (os.environ.get("EMBED_DIMENSIONS") or "").strip()
+    if not raw:
+        return _DEFAULT_VECTOR_SIZE
+    try:
+        size = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"EMBED_DIMENSIONS must be a positive integer, got {raw!r}"
+        ) from exc
+    if size <= 0:
+        raise ValueError(f"EMBED_DIMENSIONS must be a positive integer, got {raw!r}")
+    return size
+
+
 #: ``PGVectorStore``'s default, which ``_get_store`` does not override.
 _CONTENT_COLUMN = "content"
 
@@ -173,7 +195,9 @@ class PostgresVDB:
 
         self._engine: Optional[PGEngine] = None
         self._store: Optional[PGVectorStore] = None
-        self.vector_size: Optional[int] = kwargs.get("vector_size", 2048)
+        self.vector_size: Optional[int] = (
+            kwargs.get("vector_size") or _default_vector_size()
+        )
         # Resetting the database embeddings prior to ingestion
         # In order to support without recreate:
         # 1. The ingestion should return which tables/columns were added/updated/deleted
