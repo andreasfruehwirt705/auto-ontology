@@ -1274,6 +1274,20 @@ def test_key_value_probe_reads_the_lowest_distinct_values() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "empty", [pd.DataFrame(), pd.DataFrame({"id": pd.Series([], dtype="int64")})]
+)
+def test_key_value_probe_on_an_empty_table_returns_none(empty: pd.DataFrame) -> None:
+    """An empty table must not raise: some connectors return a frame with no columns."""
+    connector = _mock_connector()
+    connector.supports_statement_timeout = False
+    connector.execute.return_value = empty
+
+    assert (
+        probe_ascending_distinct_values(connector, "raw", "orders", "Order Id") is None
+    )
+
+
 def test_key_value_probe_failure_counts_toward_the_breaker() -> None:
     connector = _CappedConnector(TimeoutError("cancelled"))
 
