@@ -149,6 +149,7 @@ def test_parse_connection_string() -> None:
         "auth": "service_principal",
         "driver": "ODBC Driver 18 for SQL Server",
         "login_timeout": None,
+        "encrypt": "strict",
     }
 
 
