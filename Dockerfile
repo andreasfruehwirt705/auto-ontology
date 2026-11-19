@@ -111,6 +111,16 @@ RUN if [ "$WITH_FABRIC" = "true" ]; then \
      && rm /tmp/packages-microsoft-prod.deb \
      && apt-get update \
      && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
+     # Fabric routes a session to a capacity node whose certificate chain ends
+     # at Microsoft's TLS G2 roots (2025), which this Ubuntu's ca-certificates
+     # does not ship yet; without them the driver fails with "unable to get
+     # local issuer certificate" after login.
+     && for r in "Microsoft TLS RSA Root G2" "Microsoft TLS ECC Root G2"; do \
+            curl -fsSL -o "/tmp/root.crt" "https://www.microsoft.com/pkiops/certs/$(echo "$r" | sed 's/ /%20/g').crt" \
+         && openssl x509 -inform DER -in /tmp/root.crt -out "/usr/local/share/ca-certificates/$(echo "$r" | tr ' ' '_').crt"; \
+        done \
+     && rm -f /tmp/root.crt \
+     && update-ca-certificates \
      && apt-get purge -y --auto-remove curl \
      && rm -rf /var/lib/apt/lists/*; \
     fi
