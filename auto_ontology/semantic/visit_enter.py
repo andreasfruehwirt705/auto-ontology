@@ -430,9 +430,9 @@ def probe_ascending_distinct_values(
 
     In the warehouse's own ascending order, which is what makes two columns'
     lists comparable although each is cut short (``semantic.fk_values``).
-    ``None`` when the probe fails or the sampling breaker is open; a timeout
-    or lost connection counts against the breaker like any other profiling
-    query.
+    ``None`` when the probe fails, the sampling breaker is open or the column
+    has no non-null values; a timeout or lost connection counts against the
+    breaker like any other profiling query.
     """
     if _sampling_breaker.is_open(connector):
         return None
