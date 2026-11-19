@@ -814,6 +814,10 @@ class FabricDatabase(SQLDatabase):
             WHERE end_time >= DATEADD(hour, -{int(hours)}, SYSUTCDATETIME())
               AND status = 'Succeeded'
               AND command IS NOT NULL
+              -- Query Insights also records session setup (EXEC
+              -- sp_set_session_context ...), DDL and DML; only reads can
+              -- ground the semantic layer, and the rest only fails to parse.
+              AND (command LIKE 'SELECT%' OR command LIKE 'WITH%')
             ORDER BY end_time DESC
             """,
             _QUERY_SCHEMA,

@@ -875,6 +875,13 @@ def test_get_queries_reads_query_insights(driver: FakeDriver) -> None:
     )
 
     frame = FabricDatabase(URL).get_queries(hours=6)
+    history_sql = next(
+        sql
+        for sql, _, _ in driver.executed
+        if "queryinsights.exec_requests_history" in sql
+    )
+    assert "command LIKE 'SELECT%'" in history_sql
+    assert "command LIKE 'WITH%'" in history_sql
 
     assert list(frame.columns) == ["end_time", "query_text"]
     assert "DATEADD(hour, -6," in driver.executed[0][0]
