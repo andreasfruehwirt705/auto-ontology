@@ -190,7 +190,7 @@ def test_odbc_string_for_service_principal() -> None:
         "Driver={ODBC Driver 18 for SQL Server};"
         f"Server=tcp:{HOST},1433;"
         "Database={db};"
-        "Encrypt=yes;"
+        "Encrypt=strict;"
         "TrustServerCertificate=no;"
         "Authentication=ActiveDirectoryServicePrincipal;"
         "UID={client};"
@@ -206,11 +206,24 @@ def test_odbc_string_for_token_carries_no_credentials() -> None:
         )
     )
 
-    assert "Encrypt=yes" in odbc
+    assert "Encrypt=strict" in odbc
     assert "TrustServerCertificate=no" in odbc
     assert "Authentication" not in odbc
     assert "UID" not in odbc
     assert "secret" not in odbc
+
+
+def test_encrypt_can_be_relaxed_to_tds7() -> None:
+    odbc = _odbc_connection_string(
+        _parse_connection_string(f"fabric://client:secret@{HOST}/db?encrypt=yes")
+    )
+
+    assert "Encrypt=yes;" in odbc
+
+
+def test_unknown_encrypt_mode_is_rejected() -> None:
+    with pytest.raises(ValueError, match="encrypt"):
+        _parse_connection_string(f"fabric://client:secret@{HOST}/db?encrypt=maybe")
 
 
 def test_build_connection_string() -> None:

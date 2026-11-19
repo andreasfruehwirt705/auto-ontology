@@ -67,6 +67,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_PORT = 1433
 DEFAULT_DRIVER = "ODBC Driver 18 for SQL Server"
 DEFAULT_LOGIN_TIMEOUT_S = 30
+# TDS 8.0 ("strict") wraps the whole session in TLS. Fabric SQL endpoints accept
+# it, and with auth=token the TDS 7 path (Encrypt=yes) is refused at login.
+DEFAULT_ENCRYPT = "strict"
+_ENCRYPT_MODES = ("strict", "yes")
 
 AUTH_SERVICE_PRINCIPAL = "service_principal"
 AUTH_TOKEN = "token"
@@ -169,7 +173,8 @@ def _parse_connection_string(connection_string: str) -> dict[str, Any]:
     ``auth`` is ``service_principal`` (the default; the ODBC driver signs in)
     or ``token`` (the connector fetches the token; needs ``tenant_id``).
     ``driver`` and ``login_timeout`` override the ODBC driver name and the
-    seconds allowed to establish a connection.
+    seconds allowed to establish a connection. ``encrypt`` is ``strict`` (the
+    default, TDS 8.0) or ``yes``.
     """
     parsed = urlparse(connection_string)
     if parsed.scheme.split("+", 1)[0].lower() != "fabric":
@@ -203,6 +208,10 @@ def _parse_connection_string(connection_string: str) -> dict[str, Any]:
     if auth == AUTH_TOKEN and not tenant_id:
         raise ValueError("Fabric auth=token requires tenant_id")
 
+    encrypt = (_first(query, "encrypt") or DEFAULT_ENCRYPT).lower()
+    if encrypt not in _ENCRYPT_MODES:
+        raise ValueError(f"Unsupported Fabric encrypt {encrypt!r} (use strict or yes)")
+
     login_timeout = _first(query, "login_timeout")
     return {
         "host": parsed.hostname,
@@ -214,6 +223,7 @@ def _parse_connection_string(connection_string: str) -> dict[str, Any]:
         "auth": auth,
         "driver": _first(query, "driver") or DEFAULT_DRIVER,
         "login_timeout": int(login_timeout) if login_timeout else None,
+        "encrypt": encrypt,
     }
 
 
@@ -228,7 +238,7 @@ def _odbc_connection_string(settings: dict[str, Any]) -> str:
         f"Driver={_odbc_value(settings['driver'])}",
         f"Server=tcp:{settings['host']},{settings['port']}",
         f"Database={_odbc_value(settings['database'])}",
-        "Encrypt=yes",
+        f"Encrypt={settings['encrypt']}",
         "TrustServerCertificate=no",
     ]
     if settings["auth"] == AUTH_SERVICE_PRINCIPAL:
