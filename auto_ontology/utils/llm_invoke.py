@@ -210,9 +210,10 @@ _NON_REASONING_BASE_URL = resolve("NON_REASONING", "ENDPOINT")
 _NON_REASONING_MODEL_NAME = resolve("NON_REASONING", "MODEL")
 _NON_REASONING_API_KEY = resolve("NON_REASONING", "API_KEY")
 
-# Which chat client family to build. ``auto`` keeps the model-prefix rule in
-# ``_build_client``; ``openai`` forces ``ChatOpenAI`` for every model, which is
-# what a plain OpenAI-compatible endpoint (Azure/Foundry, OpenAI, vLLM) needs:
+# Which chat client family each role builds, from ``<ROLE>_CLIENT`` (falling back
+# to ``DEFAULT_MODELS_CLIENT``, then ``auto``). ``auto`` keeps the model-prefix
+# rule in ``_use_openai_client``; ``openai`` forces ``ChatOpenAI``, which is what
+# a plain OpenAI-compatible endpoint (Azure/Foundry, OpenAI, vLLM) needs:
 # ``ChatNVIDIA`` sends ``max_tokens``, which gpt-5.x+ reject in favour of
 # ``max_completion_tokens``, and the deployment name carries no routing prefix.
 # ``nvidia`` forces ``ChatNVIDIA``.
@@ -220,11 +221,13 @@ _CHAT_CLIENT_FAMILIES = ("auto", "openai", "nvidia")
 _OPENAI_MODEL_PREFIXES = ("openai/", "azure/", "aws/")
 
 
-def _chat_client_family() -> str:
-    family = (os.environ.get("CHAT_CLIENT") or "auto").strip().lower()
+def _chat_client_family(prefix: str) -> str:
+    """Client family for the *prefix* role, read at call time."""
+    family = (resolve(prefix, "CLIENT") or "auto").strip().lower()
     if family not in _CHAT_CLIENT_FAMILIES:
         raise ValueError(
-            f"CHAT_CLIENT must be one of {', '.join(_CHAT_CLIENT_FAMILIES)}, got {family!r}"
+            f"{prefix}_CLIENT (or DEFAULT_MODELS_CLIENT) must be one of "
+            f"{', '.join(_CHAT_CLIENT_FAMILIES)}, got {family!r}"
         )
     return family
 
@@ -238,9 +241,6 @@ def _use_openai_client(model: str, family: str) -> bool:
     return model.startswith(_OPENAI_MODEL_PREFIXES)
 
 
-_CHAT_CLIENT = _chat_client_family()
-
-
 def _build_client(
     *,
     model: str,
@@ -248,14 +248,16 @@ def _build_client(
     base_url: str,
     temperature: float,
     max_tokens: int,
+    family: str,
 ) -> BaseChatModel:
     """Build a chat client for the given model/endpoint.
 
-    OpenAI-family models (``openai/``, ``azure/``, ``aws/`` prefixes) go through
-    ``ChatOpenAI``, which supports structured output. Everything else uses
-    ``ChatNVIDIA``. ``CHAT_CLIENT=openai|nvidia`` overrides the prefix rule.
+    With *family* ``auto``, OpenAI-family models (``openai/``, ``azure/``,
+    ``aws/`` prefixes) go through ``ChatOpenAI``, which supports structured
+    output, and everything else uses ``ChatNVIDIA``. ``openai`` / ``nvidia``
+    override the prefix rule (see ``_chat_client_family``).
     """
-    if _use_openai_client(model, _CHAT_CLIENT):
+    if _use_openai_client(model, family):
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
@@ -306,6 +308,7 @@ def get_llm_client(
         base_url=_BASE_URL,
         temperature=temperature,
         max_tokens=max_tokens,
+        family=_chat_client_family("REASONING"),
     )
 
 
@@ -335,6 +338,7 @@ def get_non_reasoning_llm_client(
         base_url=_NON_REASONING_BASE_URL,
         temperature=temperature,
         max_tokens=max_tokens,
+        family=_chat_client_family("NON_REASONING"),
     )
     _remember_non_reasoning(client)
     return client
