@@ -35,19 +35,22 @@ _LABEL_METADATA_COLUMN = "label"
 # to declare its width here or the first write fails with a dimension error.
 _DEFAULT_VECTOR_SIZE = 2048
 
+# pgvector builds HNSW over ``halfvec`` up to this many dimensions.
+_HNSW_HALFVEC_MAX_DIMS = 4000
+
 
 def _default_vector_size() -> int:
-    raw = (os.environ.get("EMBED_DIMENSIONS") or "").strip()
+    raw = (os.environ.get("EMBED_VECTOR_SIZE") or "").strip()
     if not raw:
         return _DEFAULT_VECTOR_SIZE
     try:
         size = int(raw)
     except ValueError as exc:
         raise ValueError(
-            f"EMBED_DIMENSIONS must be a positive integer, got {raw!r}"
+            f"EMBED_VECTOR_SIZE must be a positive integer, got {raw!r}"
         ) from exc
     if size <= 0:
-        raise ValueError(f"EMBED_DIMENSIONS must be a positive integer, got {raw!r}")
+        raise ValueError(f"EMBED_VECTOR_SIZE must be a positive integer, got {raw!r}")
     return size
 
 
@@ -195,9 +198,10 @@ class PostgresVDB:
 
         self._engine: Optional[PGEngine] = None
         self._store: Optional[PGVectorStore] = None
-        self.vector_size: Optional[int] = (
-            kwargs.get("vector_size") or _default_vector_size()
-        )
+        self.vector_size: int = kwargs.get("vector_size") or _default_vector_size()
+        # The stored-width check runs once per instance, on the first open of
+        # an existing table.
+        self._width_checked = False
         # Resetting the database embeddings prior to ingestion
         # In order to support without recreate:
         # 1. The ingestion should return which tables/columns were added/updated/deleted
@@ -253,6 +257,40 @@ class PostgresVDB:
                 )
                 return cur.fetchone() is not None
 
+    def _check_stored_width(self) -> None:
+        """Raise if the existing table's embedding width differs from ``vector_size``.
+
+        The width is fixed when the table is created, so a changed
+        ``EMBED_VECTOR_SIZE`` (or embedding model) would otherwise only surface
+        as a dimension error on the first write.
+        """
+        if self._width_checked:
+            return
+        with psycopg.connect(self.connection_string) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT a.atttypmod
+                    FROM pg_attribute a
+                    JOIN pg_class c ON c.oid = a.attrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = %s AND c.relname = %s
+                      AND a.attname = 'embedding'
+                    """,
+                    (self.schema_name, self.collection_name),
+                )
+                row = cur.fetchone()
+        # For vector/halfvec, atttypmod is the dimension count (-1 if untyped).
+        stored = row[0] if row else None
+        if stored is not None and stored > 0 and stored != self.vector_size:
+            raise ValueError(
+                f"EMBED_VECTOR_SIZE is {self.vector_size} but the embedding column "
+                f"of {self.schema_name}.{self.collection_name} is {stored} wide. "
+                f"Drop {self.schema_name}.{self.collection_name} and re-ingest, "
+                "or set EMBED_VECTOR_SIZE to the stored width."
+            )
+        self._width_checked = True
+
     def _ensure_schema(self) -> None:
         """Create the target schema if it doesn't exist.
 
@@ -281,7 +319,9 @@ class PostgresVDB:
             return self._store
 
         engine = self._get_engine()
-        if not self._table_exists():
+        if self._table_exists():
+            self._check_stored_width()
+        else:
             self._ensure_schema()
             engine.init_vectorstore_table(
                 table_name=self.collection_name,
@@ -312,8 +352,9 @@ class PostgresVDB:
 
         **The column has to become ``halfvec`` for the index to be reachable**,
         which is not obvious and is worth the ALTER. pgvector caps HNSW at 2000
-        dimensions for ``vector`` and the embedding model emits 2048, so the
-        only index that can be built over a ``vector(2048)`` column is one over
+        dimensions for ``vector`` (4000 for ``halfvec``), so for widths above
+        2000 -- the default is 2048 -- the only index that can be built over a
+        ``vector(vector_size)`` column is one over
         a cast expression -- and an expression index is matched *syntactically*,
         so it serves ``embedding::halfvec(2048) <=> $1`` and not the plain
         ``embedding <=> $1`` that ``PGVectorStore`` generates. Postgres then
@@ -323,7 +364,7 @@ class PostgresVDB:
         which costs nothing, rather than the indexed column.
 
         The tradeoff is that stored vectors are float16 rather than float32.
-        Cosine ranking over 2048 dimensions tolerates that -- it is the same
+        Cosine ranking over thousands of dimensions tolerates that -- it is the same
         approximation the index itself would apply -- but it is a real precision
         change, not just an index.
 
@@ -332,6 +373,16 @@ class PostgresVDB:
         """
         qualified = sql.Identifier(self.schema_name, self.collection_name)
         index_name = sql.Identifier(f"ix_hnsw_{self.collection_name}_embedding")
+        if self.vector_size > _HNSW_HALFVEC_MAX_DIMS:
+            logger.warning(
+                "PostgresVDB: vector_size %d exceeds pgvector's HNSW limit of %d "
+                "for halfvec; no index will be built on %s.%s and similarity "
+                "search will be a sequential scan",
+                self.vector_size,
+                _HNSW_HALFVEC_MAX_DIMS,
+                self.schema_name,
+                self.collection_name,
+            )
         try:
             with psycopg.connect(self.connection_string) as conn:
                 with conn.cursor() as cur:
